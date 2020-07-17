@@ -23,6 +23,8 @@ module Data.Yaml.Combinators
   , element
   -- * Objects
   , object
+  , objectWith
+  , objectOf
   , FieldParser
   , field
   , optField
@@ -50,7 +52,7 @@ import Control.Monad.Trans.State as State
 import Data.Vector (Vector)
 import qualified Data.Vector as V
 import Data.Functor.Product
-import Data.Functor.Constant
+import Data.Functor.Const
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HM
 import Data.HashSet (HashSet)
@@ -414,7 +416,7 @@ validate parser validator =
 newtype FieldParser a = FieldParser
   (Product
     (ReaderT Object Validation)
-    (Constant (HashMap Text ())) a)
+    (Const (HashMap Text ())) a)
   deriving (Functor, Applicative)
 
 -- | Require an object field with the given name and with a value matched by
@@ -430,7 +432,7 @@ field name p = FieldParser $
         Nothing -> Validation . Left $ ParseError 0 $ ExpectedAsPartOf (HS.singleton $ "field " ++ show name) $ Object o
         Just v -> runParserV p v
     )
-    (Constant $ HM.singleton name ())
+    (Const $ HM.singleton name ())
 
 -- | Declare an optional object field with the given name and with a value
 -- matched by the given 'Parser'.
@@ -441,7 +443,7 @@ optField
 optField name p = FieldParser $
   Pair
     (ReaderT $ \o -> traverse (runParserV p) $ HM.lookup name o)
-    (Constant $ HM.singleton name ())
+    (Const $ HM.singleton name ())
 
 -- | Declare an optional object field with the given name and with a default
 -- to use if the field is absent.
@@ -481,7 +483,7 @@ theField key value = field key (theString value)
 -- >>> parse p "name: Roma"
 -- Right ("Roma",Nothing)
 object :: FieldParser a -> Parser a
-object (FieldParser (Pair (ReaderT parseFn) (Constant names))) = fromComponent $ Z $ ParserComponent $ Just $ const $ \(I o :* Nil) ->
+object (FieldParser (Pair (ReaderT parseFn) (Const names))) = fromComponent $ Z $ ParserComponent $ Just $ const $ \(I o :* Nil) ->
   incErrLevel $
     parseFn o <*
     (case HM.keys (HM.difference o names) of
@@ -490,6 +492,26 @@ object (FieldParser (Pair (ReaderT parseFn) (Constant names))) = fromComponent $
         let v = o HM.! name
         in Validation . Left $ ParseError 0 $ UnexpectedAsPartOf (Object (HM.singleton name v)) (Object o)
     )
+
+-- | Match an object. Which set of keys to expect and how their values
+-- should be parsed is determined by the 'FieldParser'. Unlike 'object', this
+-- discards any unexpected fields.
+--
+-- >>> let p = objectWith $ field "name" string
+-- >>> parse p "name: Roma"
+-- Right "Roma"
+-- >>> parse p "{ name: Anton, age: 2 }"
+-- Right "Anton"
+objectWith :: FieldParser a -> Parser a
+objectWith (FieldParser (Pair (ReaderT parseFn) _)) = fromComponent $ Z $ ParserComponent $ Just $ const $ \(I o :* Nil) -> incErrLevel $ parseFn o
+
+-- | Match an object with unknown keys. The values are parsed using the provided 'Parser'.
+--
+-- >>> let p = objectOf (integer @Int)
+-- >>> parse p "{ a: 1, b: 2 }"
+-- Right (fromList [("a",1),("b",2)])
+objectOf :: Parser a -> Parser (HashMap Text a)
+objectOf p = fromComponent $ Z $ ParserComponent $ Just $ const $ \(I o :* Nil) -> incErrLevel $ traverse (runParserV p) o
 
 -- | Match any JSON value and return it as Aeson's 'Value'.
 --
